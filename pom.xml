@@ -13,6 +13,13 @@
   <version>0.1-SNAPSHOT</version>
   <packaging>maven-plugin</packaging>
 
+  <scm>
+    <connection>scm:git:git@github.com:HubSpot/dependency-management-plugin.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/HubSpot/dependency-management-plugin.git</developerConnection>
+    <url>git@github.com:HubSpot/dependency-management-plugin.git</url>
+    <tag>HEAD</tag>
+  </scm>
+
   <developers>
     <developer>
       <name>Jonathan Haber</name>
