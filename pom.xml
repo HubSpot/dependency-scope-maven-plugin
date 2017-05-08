@@ -14,9 +14,9 @@
   <packaging>maven-plugin</packaging>
 
   <scm>
-    <connection>scm:git:git@github.com:HubSpot/dependency-management-plugin.git</connection>
-    <developerConnection>scm:git:ssh://git@github.com/HubSpot/dependency-management-plugin.git</developerConnection>
-    <url>git@github.com:HubSpot/dependency-management-plugin.git</url>
+    <connection>scm:git:git@github.com:HubSpot/dependency-scope-maven-plugin.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/HubSpot/dependency-scope-maven-plugin.git</developerConnection>
+    <url>git@github.com:HubSpot/dependency-scope-maven-plugin.git</url>
     <tag>HEAD</tag>
   </scm>
 
