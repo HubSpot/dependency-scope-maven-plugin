@@ -1,6 +1,5 @@
 package com.hubspot.maven.plugins.dependency.scope;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -54,36 +53,31 @@ public class DependencyScopeMojo extends AbstractMojo {
   @Override
   public void execute() throws MojoExecutionException, MojoFailureException {
     DependencyNode node = buildDependencyNode();
+    TraversalContext context = TraversalContext.newContextFor(node);
 
-    Set<String> testScopedArtifacts = new HashSet<>();
-    for (DependencyNode dependency : node.getChildren()) {
-      if (Artifact.SCOPE_TEST.equals(dependency.getArtifact().getScope())) {
-        testScopedArtifacts.add(dependency.getArtifact().getDependencyConflictId());
-      }
-    }
-
-    List<Artifact> path = new ArrayList<>();
-    path.add(node.getArtifact());
     for (DependencyNode dependency : node.getChildren()) {
       if (!Artifact.SCOPE_TEST.equals(dependency.getArtifact().getScope())) {
-        checkForArtifacts(dependency, path, testScopedArtifacts);
+        TraversalContext subcontext = context.stepInto(project, dependency);
+
+        checkForArtifacts(dependency, subcontext);
       }
     }
 
     print(node, "");
   }
 
-  private void print(DependencyNode node, String prefix) {
-    //getLog().info(prefix + " - " + node.getArtifact().toString());
-    for (DependencyNode child : node.getChildren()) {
-      print(child, prefix + "  ");
+  private DependencyNode buildDependencyNode() throws MojoExecutionException {
+    try {
+      ProjectBuildingRequest buildingRequest = new DefaultProjectBuildingRequest(session.getProjectBuildingRequest());
+      buildingRequest.setProject(project);
+
+      return dependencyGraphBuilder.buildDependencyGraph(buildingRequest, null);
+    } catch (DependencyGraphBuilderException e) {
+      throw new MojoExecutionException("Error building dependency graph", e);
     }
   }
 
-  private void checkForArtifacts(DependencyNode node, List<Artifact> path, Set<String> artifacts) throws MojoExecutionException {
-    path = new ArrayList<>(path);
-    path.add(node.getArtifact());
-
+  private void checkForArtifacts(DependencyNode node, TraversalContext context) throws MojoExecutionException {
     final MavenProject dependencyProject;
     try {
       dependencyProject = projectBuilder.buildFromRepository(
@@ -96,15 +90,24 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
 
     for (Dependency dependency : dependencyProject.getDependencies()) {
-      if (artifacts.contains(dependency.getManagementKey()) && RUNTIME_SCOPES.contains(dependency.getScope())) {
+      if (RUNTIME_SCOPES.contains(dependency.getScope()) && context.isOverriddenToTestScope(dependency)) {
         getLog().warn("Artifact scope changed from " + dependency.getScope() + " to test: " + dependency.getManagementKey());
         getLog().warn("Path to dependency:");
-        print(path, dependency.getManagementKey());
+        print(context.path(), dependency.getManagementKey());
       }
     }
 
     for (DependencyNode child : node.getChildren()) {
-      checkForArtifacts(child, path, artifacts);
+      TraversalContext subcontext = context.stepInto(dependencyProject, child);
+
+      checkForArtifacts(child, subcontext);
+    }
+  }
+
+  private void print(DependencyNode node, String prefix) {
+    //getLog().info(prefix + " - " + node.getArtifact().toString());
+    for (DependencyNode child : node.getChildren()) {
+      print(child, prefix + "  ");
     }
   }
 
@@ -116,16 +119,5 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
 
     getLog().warn(prefix + "- " + dependency);
-  }
-
-  private DependencyNode buildDependencyNode() throws MojoExecutionException {
-    try {
-      ProjectBuildingRequest buildingRequest = new DefaultProjectBuildingRequest(session.getProjectBuildingRequest());
-      buildingRequest.setProject(project);
-
-      return dependencyGraphBuilder.buildDependencyGraph(buildingRequest, null);
-    } catch (DependencyGraphBuilderException e) {
-      throw new MojoExecutionException("Error building dependency graph", e);
-    }
   }
 }
