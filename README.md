@@ -34,7 +34,7 @@ The `fail` configuration option controls whether your build will fail in the pre
 
 ## How to fix issues
 
-If the plugin detects an issue, there are two mains way you can fix it. You can either change your local project by removing the test scope from the dependency, or you can change your dependency tree (so that this dependency doesn't appear elsewhere at scope runtime or compile). Which option is the right way to go varies case-by-case unfortunately. 
+If the plugin detects an issue, there are two mains way you can fix it. You can either change your local project by removing the test scope from the dependency, or you can change your dependency tree (so that the dependency doesn't appear elsewhere at scope runtime or compile). Which option is the right way to go varies case-by-case unfortunately. 
 
 If the issue is with a testing library (like junit, Mockito, or assertj), you should probably investigate your dependency tree rather than bumping the dependency to compile scope (since these libraries normally aren't used at runtime). Someone might have missed a `<scope>test</scope>` declaration, causing junit to leak out as a compile-scoped transitive dependency. If that's the case, the best fix is to update that dependency's POM, adding `<scope>test</scope>` to its junit declaration. Or as a quick fix, you can add a junit exclusion to the problematic dependency.
 
