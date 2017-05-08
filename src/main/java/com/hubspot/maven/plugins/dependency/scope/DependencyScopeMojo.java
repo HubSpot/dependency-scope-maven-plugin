@@ -1,11 +1,13 @@
 package com.hubspot.maven.plugins.dependency.scope;
 
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.TreeSet;
 
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.repository.ArtifactRepository;
@@ -126,7 +128,7 @@ public class DependencyScopeMojo extends AbstractMojo {
       String key = readableGATC(violation.getDependency());
 
       if (!violationsByDependency.containsKey(key)) {
-        violationsByDependency.put(key, new HashSet<DependencyViolation>());
+        violationsByDependency.put(key, new TreeSet<>(artifactNameComparator()));
       }
 
       violationsByDependency.get(key).add(violation);
@@ -150,6 +152,16 @@ public class DependencyScopeMojo extends AbstractMojo {
         getLog().warn(message);
       }
     }
+  }
+
+  private static Comparator<DependencyViolation> artifactNameComparator() {
+    return new Comparator<DependencyViolation>() {
+
+      @Override
+      public int compare(DependencyViolation a, DependencyViolation b) {
+        return readableGATCV(a.getSource().currentArtifact()).compareTo(readableGATCV(b.getSource().currentArtifact()));
+      }
+    };
   }
 
   private static String readableGATC(Dependency dependency) {
