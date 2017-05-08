@@ -1,8 +1,10 @@
 package com.hubspot.maven.plugins.dependency.scope;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 
 import org.apache.maven.artifact.Artifact;
@@ -13,6 +15,7 @@ import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.Component;
+import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
@@ -25,7 +28,7 @@ import org.apache.maven.shared.dependency.graph.DependencyGraphBuilder;
 import org.apache.maven.shared.dependency.graph.DependencyGraphBuilderException;
 import org.apache.maven.shared.dependency.graph.DependencyNode;
 
-@Mojo(name = "check", requiresDependencyCollection = ResolutionScope.TEST, threadSafe = true)
+@Mojo(name = "check", defaultPhase = LifecyclePhase.VALIDATE, requiresDependencyCollection = ResolutionScope.TEST, threadSafe = true)
 public class DependencyScopeMojo extends AbstractMojo {
   private static final Set<String> RUNTIME_SCOPES = new HashSet<>(Arrays.asList(Artifact.SCOPE_COMPILE, Artifact.SCOPE_RUNTIME));
 
@@ -55,15 +58,43 @@ public class DependencyScopeMojo extends AbstractMojo {
     DependencyNode node = buildDependencyNode();
     TraversalContext context = TraversalContext.newContextFor(node);
 
+    Set<DependencyViolation> violations = new HashSet<>();
     for (DependencyNode dependency : node.getChildren()) {
       if (!Artifact.SCOPE_TEST.equals(dependency.getArtifact().getScope())) {
         TraversalContext subcontext = context.stepInto(project, dependency);
 
-        checkForArtifacts(dependency, subcontext);
+        violations.addAll(findViolations(dependency, subcontext));
       }
     }
 
-    print(node, "");
+    if (!violations.isEmpty()) {
+      printViolations(violations);
+
+      if (fail) {
+        throw new MojoFailureException("Test dependency scope issues found");
+      }
+    } else {
+      getLog().info("No test dependency scope issues found");
+    }
+  }
+
+  private Set<DependencyViolation> findViolations(DependencyNode node, TraversalContext context) throws MojoExecutionException {
+    MavenProject dependencyProject = buildDependencyProject(node);
+
+    Set<DependencyViolation> violations = new HashSet<>();
+    for (Dependency dependency : dependencyProject.getDependencies()) {
+      if (RUNTIME_SCOPES.contains(dependency.getScope()) && context.isOverriddenToTestScope(dependency)) {
+        violations.add(new DependencyViolation(context, dependency));
+      }
+    }
+
+    for (DependencyNode child : node.getChildren()) {
+      TraversalContext subcontext = context.stepInto(dependencyProject, child);
+
+      violations.addAll(findViolations(child, subcontext));
+    }
+
+    return violations;
   }
 
   private DependencyNode buildDependencyNode() throws MojoExecutionException {
@@ -77,10 +108,9 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
   }
 
-  private void checkForArtifacts(DependencyNode node, TraversalContext context) throws MojoExecutionException {
-    final MavenProject dependencyProject;
+  private MavenProject buildDependencyProject(DependencyNode node) throws MojoExecutionException {
     try {
-      dependencyProject = projectBuilder.buildFromRepository(
+      return projectBuilder.buildFromRepository(
           node.getArtifact(),
           project.getRemoteArtifactRepositories(),
           localRepository
@@ -88,36 +118,69 @@ public class DependencyScopeMojo extends AbstractMojo {
     } catch (ProjectBuildingException e) {
       throw new MojoExecutionException("Error building dependency project", e);
     }
+  }
 
-    for (Dependency dependency : dependencyProject.getDependencies()) {
-      if (RUNTIME_SCOPES.contains(dependency.getScope()) && context.isOverriddenToTestScope(dependency)) {
-        getLog().warn("Artifact scope changed from " + dependency.getScope() + " to test: " + dependency.getManagementKey());
-        getLog().warn("Path to dependency:");
-        print(context.path(), dependency.getManagementKey());
+  private void printViolations(Set<DependencyViolation> violations) {
+    Map<String, Set<DependencyViolation>> violationsByDependency = new HashMap<>();
+    for (DependencyViolation violation : violations) {
+      String key = readableGATC(violation.getDependency());
+
+      if (!violationsByDependency.containsKey(key)) {
+        violationsByDependency.put(key, new HashSet<DependencyViolation>());
+      }
+
+      violationsByDependency.get(key).add(violation);
+    }
+
+    for (Entry<String, Set<DependencyViolation>> dependencyViolation : violationsByDependency.entrySet()) {
+      StringBuilder message = new StringBuilder();
+      message.append("Found a problem with test-scoped dependency ").append(dependencyViolation.getKey());
+      for (DependencyViolation violation : dependencyViolation.getValue()) {
+        message.append("\n")
+            .append("  ")
+            .append("Scope ")
+            .append(violation.getDependency().getScope())
+            .append(" was expected by artifact: ")
+            .append(readableGATCV(violation.getSource().currentArtifact()));
+      }
+
+      if (fail) {
+        getLog().error(message);
+      } else {
+        getLog().warn(message);
       }
     }
-
-    for (DependencyNode child : node.getChildren()) {
-      TraversalContext subcontext = context.stepInto(dependencyProject, child);
-
-      checkForArtifacts(child, subcontext);
-    }
   }
 
-  private void print(DependencyNode node, String prefix) {
-    //getLog().info(prefix + " - " + node.getArtifact().toString());
-    for (DependencyNode child : node.getChildren()) {
-      print(child, prefix + "  ");
+  private static String readableGATC(Dependency dependency) {
+    String name = dependency.getGroupId() + ":" + dependency.getArtifactId();
+
+    if (dependency.getType() != null && !"jar".equals(dependency.getType())) {
+      name += ":" + dependency.getType();
     }
+
+    if (dependency.getClassifier() != null) {
+      name += ":" + dependency.getClassifier();
+    }
+
+    return name;
   }
 
-  private void print(List<Artifact> path, String dependency) {
-    StringBuilder prefix = new StringBuilder("");
-    for (Artifact artifact : path) {
-      getLog().warn(prefix + "- " + artifact.toString());
-      prefix.append("  ");
+  private static String readableGATCV(Artifact artifact) {
+    String name = artifact.getGroupId() + ":" + artifact.getArtifactId();
+
+    if (artifact.getType() != null && !"jar".equals(artifact.getType())) {
+      name += ":" + artifact.getType();
     }
 
-    getLog().warn(prefix + "- " + dependency);
+    if (artifact.getClassifier() != null) {
+      name += ":" + artifact.getClassifier();
+    }
+
+    // this modifies the artifact internal state :/
+    artifact.isSnapshot();
+    name += ":" + artifact.getBaseVersion();
+
+    return name;
   }
 }
