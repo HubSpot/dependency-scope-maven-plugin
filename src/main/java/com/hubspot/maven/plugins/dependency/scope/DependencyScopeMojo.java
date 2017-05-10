@@ -240,7 +240,7 @@ public class DependencyScopeMojo extends AbstractMojo {
       if (fail) {
         getLog().error(message);
       } else {
-        getLog().error(message);
+        getLog().warn(message);
       }
     }
   }
