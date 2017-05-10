@@ -60,7 +60,7 @@ public class DependencyScopeMojo extends AbstractMojo {
   @Parameter(defaultValue = "${localRepository}", readonly = true, required = true)
   private ArtifactRepository localRepository;
 
-  @Parameter(defaultValue = "true")
+  @Parameter(property = "useParallelDependencyResolution", defaultValue = "true")
   private boolean useParallelDependencyResolution;
 
   @Parameter(defaultValue = "false")
@@ -79,6 +79,11 @@ public class DependencyScopeMojo extends AbstractMojo {
 
   @Override
   public void execute() throws MojoExecutionException, MojoFailureException {
+    if (skip) {
+      getLog().info("Skipping plugin execution");
+      return;
+    }
+
     executorService = newExecutorService();
 
     DependencyNode node = buildDependencyNode();
@@ -228,13 +233,15 @@ public class DependencyScopeMojo extends AbstractMojo {
 
   private ListeningExecutorService newExecutorService() {
     if (useParallelDependencyResolution) {
+      getLog().debug("Using parallel dependency resolution");
       return MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(
-          10,
+          Math.min(Runtime.getRuntime().availableProcessors() * 5, 20),
           new ThreadFactoryBuilder().setNameFormat("dependency-project-builder-%s")
               .setDaemon(true)
               .build()
       ));
     } else {
+      getLog().debug("Using single-threaded dependency resolution");
       return MoreExecutors.newDirectExecutorService();
     }
   }
