@@ -1,13 +1,19 @@
 package com.hubspot.maven.plugins.dependency.scope;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.repository.ArtifactRepository;
@@ -30,6 +36,17 @@ import org.apache.maven.shared.dependency.graph.DependencyGraphBuilder;
 import org.apache.maven.shared.dependency.graph.DependencyGraphBuilderException;
 import org.apache.maven.shared.dependency.graph.DependencyNode;
 
+import com.google.common.base.Throwables;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.ListeningExecutorService;
+import com.google.common.util.concurrent.MoreExecutors;
+import com.google.common.util.concurrent.SettableFuture;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+
 @Mojo(name = "check", defaultPhase = LifecyclePhase.VALIDATE, requiresDependencyCollection = ResolutionScope.TEST, threadSafe = true)
 public class DependencyScopeMojo extends AbstractMojo {
   private static final Set<String> RUNTIME_SCOPES = new HashSet<>(Arrays.asList(Artifact.SCOPE_COMPILE, Artifact.SCOPE_RUNTIME));
@@ -43,6 +60,9 @@ public class DependencyScopeMojo extends AbstractMojo {
   @Parameter(defaultValue = "${localRepository}", readonly = true, required = true)
   private ArtifactRepository localRepository;
 
+  @Parameter(defaultValue = "true")
+  private boolean useParallelDependencyResolution;
+
   @Parameter(defaultValue = "false")
   private boolean fail;
 
@@ -55,19 +75,25 @@ public class DependencyScopeMojo extends AbstractMojo {
   @Component
   private MavenProjectBuilder projectBuilder;
 
+  private ListeningExecutorService executorService;
+
   @Override
   public void execute() throws MojoExecutionException, MojoFailureException {
+    executorService = newExecutorService();
+
     DependencyNode node = buildDependencyNode();
     TraversalContext context = TraversalContext.newContextFor(node);
 
-    Set<DependencyViolation> violations = new HashSet<>();
+    List<ListenableFuture<Set<DependencyViolation>>> futures = new ArrayList<>();
     for (DependencyNode dependency : node.getChildren()) {
       if (!Artifact.SCOPE_TEST.equals(dependency.getArtifact().getScope())) {
         TraversalContext subcontext = context.stepInto(project, dependency);
 
-        violations.addAll(findViolations(dependency, subcontext));
+        futures.add(findViolations(dependency, subcontext));
       }
     }
+
+    Set<DependencyViolation> violations = resolve(Futures.allAsList(futures));
 
     if (!violations.isEmpty()) {
       printViolations(violations);
@@ -80,23 +106,63 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
   }
 
-  private Set<DependencyViolation> findViolations(DependencyNode node, TraversalContext context) throws MojoExecutionException {
-    MavenProject dependencyProject = buildDependencyProject(node);
+  private ListenableFuture<Set<DependencyViolation>> findViolations(final DependencyNode node,
+                                                                    final TraversalContext context) {
+    final SettableFuture<Set<DependencyViolation>> future = SettableFuture.create();
 
-    Set<DependencyViolation> violations = new HashSet<>();
-    for (Dependency dependency : dependencyProject.getDependencies()) {
-      if (RUNTIME_SCOPES.contains(dependency.getScope()) && context.isOverriddenToTestScope(dependency)) {
-        violations.add(new DependencyViolation(context, dependency));
+    Futures.addCallback(buildDependencyProject(node), new FutureCallback<MavenProject>() {
+
+      @Override
+      public void onSuccess(MavenProject dependencyProject) {
+        try {
+          final Set<DependencyViolation> violations = Sets.newConcurrentHashSet();
+          for (Dependency dependency : dependencyProject.getDependencies()) {
+            if (RUNTIME_SCOPES.contains(dependency.getScope()) && context.isOverriddenToTestScope(dependency)) {
+              violations.add(new DependencyViolation(context, dependency));
+            }
+          }
+
+          if (node.getChildren().isEmpty()) {
+            future.set(violations);
+            return;
+          }
+
+          final CountDownLatch latch = new CountDownLatch(node.getChildren().size());
+          for (DependencyNode child : node.getChildren()) {
+            TraversalContext subcontext = context.stepInto(dependencyProject, child);
+
+            Futures.addCallback(findViolations(child, subcontext), new FutureCallback<Set<DependencyViolation>>() {
+
+              @Override
+              public void onSuccess(Set<DependencyViolation> result) {
+                try {
+                  violations.addAll(result);
+                } finally {
+                  latch.countDown();
+                  if (latch.getCount() == 0) {
+                    future.set(violations);
+                  }
+                }
+              }
+
+              @Override
+              public void onFailure(Throwable t) {
+                future.setException(t);
+              }
+            });
+          }
+        } catch (Throwable t) {
+          future.setException(t);
+        }
       }
-    }
 
-    for (DependencyNode child : node.getChildren()) {
-      TraversalContext subcontext = context.stepInto(dependencyProject, child);
+      @Override
+      public void onFailure(Throwable t) {
+        future.setException(t);
+      }
+    });
 
-      violations.addAll(findViolations(child, subcontext));
-    }
-
-    return violations;
+    return future;
   }
 
   private DependencyNode buildDependencyNode() throws MojoExecutionException {
@@ -110,16 +176,22 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
   }
 
-  private MavenProject buildDependencyProject(DependencyNode node) throws MojoExecutionException {
-    try {
-      return projectBuilder.buildFromRepository(
-          node.getArtifact(),
-          project.getRemoteArtifactRepositories(),
-          localRepository
-      );
-    } catch (ProjectBuildingException e) {
-      throw new MojoExecutionException("Error building dependency project", e);
-    }
+  private ListenableFuture<MavenProject> buildDependencyProject(final DependencyNode node) {
+    return executorService.submit(new Callable<MavenProject>() {
+
+      @Override
+      public MavenProject call() throws Exception {
+        try {
+          return projectBuilder.buildFromRepository(
+              node.getArtifact(),
+              project.getRemoteArtifactRepositories(),
+              localRepository
+          );
+        } catch (ProjectBuildingException e) {
+          throw new MojoExecutionException("Error building dependency project", e);
+        }
+      }
+    });
   }
 
   private void printViolations(Set<DependencyViolation> violations) {
@@ -151,6 +223,32 @@ public class DependencyScopeMojo extends AbstractMojo {
       } else {
         getLog().warn(message);
       }
+    }
+  }
+
+  private ListeningExecutorService newExecutorService() {
+    if (useParallelDependencyResolution) {
+      return MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(
+          10,
+          new ThreadFactoryBuilder().setNameFormat("dependency-project-builder-%s")
+              .setDaemon(true)
+              .build()
+      ));
+    } else {
+      return MoreExecutors.newDirectExecutorService();
+    }
+  }
+
+  private static Set<DependencyViolation> resolve(ListenableFuture<List<Set<DependencyViolation>>> future)
+      throws MojoExecutionException {
+    try {
+      return Sets.newHashSet(Iterables.concat(future.get()));
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new MojoExecutionException("Interrupted while checking dependency scopes", e);
+    } catch (ExecutionException e) {
+      Throwables.propagateIfInstanceOf(e.getCause(), MojoExecutionException.class);
+      throw new MojoExecutionException("Error while checking dependency scopes", e.getCause());
     }
   }
 

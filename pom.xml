@@ -87,16 +87,10 @@
       <artifactId>maven-dependency-tree</artifactId>
       <version>3.0</version>
     </dependency>
-    <!--<dependency>
-      <groupId>org.eclipse.sisu</groupId>
-      <artifactId>org.eclipse.sisu.plexus</artifactId>
-      <version>0.3.0</version>
-    </dependency>
     <dependency>
-      <groupId>org.codehaus.plexus</groupId>
-      <artifactId>plexus-utils</artifactId>
-      <version>3.0.22</version>
-    </dependency>-->
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+    </dependency>
   </dependencies>
 
   <profiles>
