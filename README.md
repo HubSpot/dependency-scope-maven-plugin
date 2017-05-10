@@ -16,7 +16,7 @@ Add the following snippet to the plugins section of your POM:
 <plugin>
   <groupId>com.hubspot.maven.plugins</groupId>
   <artifactId>dependency-scope-maven-plugin</artifactId>
-  <version>0.1</version>
+  <version>0.3</version>
   <executions>
     <execution>
       <goals>
