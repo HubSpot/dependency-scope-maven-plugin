@@ -40,7 +40,7 @@ Let's look at some examples:
 
 ```
 [INFO] --- dependency-scope-maven-plugin:0.3:check (check) @ MyApp ---
-[WARNING] Found a problem with test-scoped dependency com.google.guava:guava
+[ERROR] Found a problem with test-scoped dependency com.google.guava:guava
   Scope compile was expected by artifact: com.google.inject:guice:4.1.0
 ```
 
@@ -48,7 +48,7 @@ In this case, I have Guava at test scope, but one of my dependencies (Guice) has
 
 ```
 [INFO] --- dependency-scope-maven-plugin:0.3:check (check) @ MyApp ---
-[WARNING] Found a problem with test-scoped dependency junit:junit
+[ERROR] Found a problem with test-scoped dependency junit:junit
   Scope compile was expected by artifact: jline:jline:0.9.94
 ```
 
