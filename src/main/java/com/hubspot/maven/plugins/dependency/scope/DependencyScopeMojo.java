@@ -64,6 +64,9 @@ public class DependencyScopeMojo extends AbstractMojo {
   private boolean useParallelDependencyResolution;
 
   @Parameter(defaultValue = "false")
+  private boolean linkToDocumentation;
+
+  @Parameter(defaultValue = "false")
   private boolean fail;
 
   @Parameter(defaultValue = "false")
@@ -227,6 +230,17 @@ public class DependencyScopeMojo extends AbstractMojo {
         getLog().error(message);
       } else {
         getLog().warn(message);
+      }
+    }
+
+    if (linkToDocumentation) {
+      StringBuilder message = new StringBuilder("For information on how to fix these issues, see here:")
+          .append("\n  ")
+          .append("https://github.com/HubSpot/dependency-scope-maven-plugin#how-to-fix-issues");
+      if (fail) {
+        getLog().error(message);
+      } else {
+        getLog().error(message);
       }
     }
   }
