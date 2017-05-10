@@ -237,11 +237,7 @@ public class DependencyScopeMojo extends AbstractMojo {
       StringBuilder message = new StringBuilder("For information on how to fix these issues, see here:")
           .append("\n  ")
           .append("https://github.com/HubSpot/dependency-scope-maven-plugin#how-to-fix-issues");
-      if (fail) {
-        getLog().error(message);
-      } else {
-        getLog().warn(message);
-      }
+      getLog().info(message);
     }
   }
 
