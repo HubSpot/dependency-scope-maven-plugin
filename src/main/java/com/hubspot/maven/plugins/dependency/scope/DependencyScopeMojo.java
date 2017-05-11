@@ -1,10 +1,8 @@
 package com.hubspot.maven.plugins.dependency.scope;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -49,7 +47,6 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 @Mojo(name = "check", defaultPhase = LifecyclePhase.VALIDATE, requiresDependencyCollection = ResolutionScope.TEST, threadSafe = true)
 public class DependencyScopeMojo extends AbstractMojo {
-  private static final Set<String> RUNTIME_SCOPES = new HashSet<>(Arrays.asList(Artifact.SCOPE_COMPILE, Artifact.SCOPE_RUNTIME));
 
   @Parameter( defaultValue = "${session}", required = true, readonly = true )
   protected MavenSession session;
@@ -125,7 +122,7 @@ public class DependencyScopeMojo extends AbstractMojo {
         try {
           final Set<DependencyViolation> violations = Sets.newConcurrentHashSet();
           for (Dependency dependency : dependencyProject.getDependencies()) {
-            if (RUNTIME_SCOPES.contains(dependency.getScope()) && context.isOverriddenToTestScope(dependency)) {
+            if (dependencyRequiredAtRuntime(dependency) && context.isOverriddenToTestScope(dependency)) {
               violations.add(new DependencyViolation(context, dependency));
             }
           }
@@ -253,6 +250,15 @@ public class DependencyScopeMojo extends AbstractMojo {
     } else {
       getLog().debug("Using single-threaded dependency resolution");
       return MoreExecutors.newDirectExecutorService();
+    }
+  }
+
+  private static boolean dependencyRequiredAtRuntime(Dependency dependency) {
+    if (dependency.isOptional()) {
+      return false;
+    } else {
+      String scope = dependency.getScope();
+      return Artifact.SCOPE_COMPILE.equals(scope) || Artifact.SCOPE_RUNTIME.equals(scope);
     }
   }
 
