@@ -34,7 +34,7 @@ The `fail` configuration option controls whether your build will fail in the pre
 
 ## How to fix issues
 
-If the plugin detects an issue, that means your local POM declares a dependency with `<scope>test</scope>` but one of your dependencies wants it at compile or runtime scope. To fix, you either need to change your scope or to change your dependency's scope (by changing it's POM or adding an exclusion). Which option is the right way to go varies case-by-case unfortunately.
+If the plugin detects an issue, that means your local POM declares a dependency with `<scope>test</scope>` but one of your dependencies wants it at compile or runtime scope. To fix, you either need to change your scope or to change your dependency's scope (by changing its POM or adding an exclusion). Which option is the right way to go varies case-by-case unfortunately.
 
 Let's look at some examples:
 
