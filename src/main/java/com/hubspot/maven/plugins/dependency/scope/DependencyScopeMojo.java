@@ -14,9 +14,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.execution.MavenSession;
-import org.apache.maven.model.Dependency;
 import org.apache.maven.model.Model;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -28,12 +26,17 @@ import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.DefaultProjectBuildingRequest;
 import org.apache.maven.project.MavenProject;
-import org.apache.maven.project.MavenProjectBuilder;
-import org.apache.maven.project.ProjectBuildingException;
 import org.apache.maven.project.ProjectBuildingRequest;
 import org.apache.maven.shared.dependency.graph.DependencyGraphBuilder;
 import org.apache.maven.shared.dependency.graph.DependencyGraphBuilderException;
 import org.apache.maven.shared.dependency.graph.DependencyNode;
+import org.eclipse.aether.RepositorySystem;
+import org.eclipse.aether.RepositorySystemSession;
+import org.eclipse.aether.artifact.DefaultArtifact;
+import org.eclipse.aether.graph.Dependency;
+import org.eclipse.aether.resolution.ArtifactDescriptorException;
+import org.eclipse.aether.resolution.ArtifactDescriptorRequest;
+import org.eclipse.aether.resolution.ArtifactDescriptorResult;
 
 import com.google.common.base.Throwables;
 import com.google.common.collect.Iterables;
@@ -56,8 +59,8 @@ public class DependencyScopeMojo extends AbstractMojo {
   @Parameter(defaultValue = "${project}", readonly = true, required = true)
   private MavenProject project;
 
-  @Parameter(defaultValue = "${localRepository}", readonly = true, required = true)
-  private ArtifactRepository localRepository;
+  @Parameter(defaultValue="${repositorySystemSession}", required = true, readonly = true)
+  private RepositorySystemSession repositorySystemSession;
 
   @Parameter(property = "useParallelDependencyResolution", defaultValue = "true")
   private boolean useParallelDependencyResolution;
@@ -71,11 +74,14 @@ public class DependencyScopeMojo extends AbstractMojo {
   @Parameter(defaultValue = "false")
   private boolean skip;
 
-  @Component
-  private DependencyGraphBuilder dependencyGraphBuilder;
+  @Parameter(property = "verbose", defaultValue = "false")
+  private boolean verbose;
 
   @Component
-  private MavenProjectBuilder projectBuilder;
+  private RepositorySystem repositorySystem;
+
+  @Component
+  private DependencyGraphBuilder dependencyGraphBuilder;
 
   private ListeningExecutorService executorService;
 
@@ -117,13 +123,13 @@ public class DependencyScopeMojo extends AbstractMojo {
                                                                     final TraversalContext context) {
     final SettableFuture<Set<DependencyViolation>> future = SettableFuture.create();
 
-    Futures.addCallback(buildDependencyProject(node), new FutureCallback<MavenProject>() {
+    Futures.addCallback(resolveArtifactDescriptor(node.getArtifact()), new FutureCallback<ArtifactDescriptorResult>() {
 
       @Override
-      public void onSuccess(MavenProject dependencyProject) {
+      public void onSuccess(ArtifactDescriptorResult artifactDescriptor) {
         try {
           final Set<DependencyViolation> violations = Sets.newConcurrentHashSet();
-          for (Dependency dependency : dependencyProject.getDependencies()) {
+          for (Dependency dependency : artifactDescriptor.getDependencies()) {
             if (dependencyRequiredAtRuntime(dependency) && context.isOverriddenToTestScope(dependency)) {
               violations.add(new DependencyViolation(context, dependency));
             }
@@ -136,7 +142,7 @@ public class DependencyScopeMojo extends AbstractMojo {
 
           final CountDownLatch latch = new CountDownLatch(node.getChildren().size());
           for (DependencyNode child : node.getChildren()) {
-            TraversalContext subcontext = context.stepInto(dependencyProject, child);
+            TraversalContext subcontext = context.stepInto(artifactDescriptor, child);
 
             Futures.addCallback(findViolations(child, subcontext), new FutureCallback<Set<DependencyViolation>>() {
 
@@ -183,21 +189,22 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
   }
 
-  private ListenableFuture<MavenProject> buildDependencyProject(final DependencyNode node) {
-    return executorService.submit(new Callable<MavenProject>() {
+  private ListenableFuture<ArtifactDescriptorResult> resolveArtifactDescriptor(final Artifact artifact) {
+    return executorService.submit(new Callable<ArtifactDescriptorResult>() {
 
       @Override
-      public MavenProject call() throws Exception {
+      public ArtifactDescriptorResult call() throws Exception {
+        ArtifactDescriptorRequest request = new ArtifactDescriptorRequest(
+            toAether(artifact),
+            project.getRemoteProjectRepositories(),
+            null
+        );
+
         try {
-          return projectBuilder.buildFromRepository(
-              node.getArtifact(),
-              project.getRemoteArtifactRepositories(),
-              localRepository
-          );
-        } catch (ProjectBuildingException e) {
-          String message = "Error building project for dependency " + readableGATCV(node.getArtifact());
-          getLog().warn(message);
-          return EMPTY_PROJECT;
+          return repositorySystem.readArtifactDescriptor(repositorySystemSession, request);
+        } catch (ArtifactDescriptorException e) {
+          String message = "Error resolving descriptor for artifact " + readableGATCV(artifact);
+          throw new MojoExecutionException(message, e);
         }
       }
     });
@@ -225,6 +232,15 @@ public class DependencyScopeMojo extends AbstractMojo {
             .append(violation.getDependency().getScope())
             .append(" was expected by artifact: ")
             .append(readableGATCV(violation.getSource().currentArtifact()));
+
+        if (verbose) {
+          message.append("\n  Via chain:");
+          StringBuilder prefix = new StringBuilder("  ");
+          for (Artifact artifact : violation.getSource().path()) {
+            message.append("\n").append(prefix).append("- ").append(artifact.toString());
+            prefix.append("  ");
+          }
+        }
       }
 
       if (fail) {
@@ -290,14 +306,16 @@ public class DependencyScopeMojo extends AbstractMojo {
   }
 
   private static String readableGATC(Dependency dependency) {
-    String name = dependency.getGroupId() + ":" + dependency.getArtifactId();
+    org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
 
-    if (dependency.getType() != null && !"jar".equals(dependency.getType())) {
-      name += ":" + dependency.getType();
+    String name = artifact.getGroupId() + ":" + artifact.getArtifactId();
+
+    if (!"jar".equals(artifact.getExtension())) {
+      name += ":" + artifact.getExtension();
     }
 
-    if (dependency.getClassifier() != null) {
-      name += ":" + dependency.getClassifier();
+    if (!artifact.getClassifier().isEmpty()) {
+      name += ":" + artifact.getClassifier();
     }
 
     return name;
@@ -319,6 +337,18 @@ public class DependencyScopeMojo extends AbstractMojo {
     name += ":" + artifact.getBaseVersion();
 
     return name;
+  }
+
+  private static org.eclipse.aether.artifact.Artifact toAether(Artifact artifact) {
+    return new DefaultArtifact(
+        artifact.getGroupId(),
+        artifact.getArtifactId(),
+        artifact.getClassifier(),
+        artifact.getType(),
+        artifact.getVersion(),
+        null,
+        artifact.getFile()
+    );
   }
 
   private static MavenProject emptyProject() {

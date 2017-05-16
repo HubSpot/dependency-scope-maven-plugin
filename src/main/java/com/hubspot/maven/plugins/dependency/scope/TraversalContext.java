@@ -7,21 +7,22 @@ import java.util.List;
 import java.util.Set;
 
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.model.Dependency;
-import org.apache.maven.model.Exclusion;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.shared.dependency.graph.DependencyNode;
+import org.eclipse.aether.graph.Dependency;
+import org.eclipse.aether.graph.Exclusion;
+import org.eclipse.aether.resolution.ArtifactDescriptorResult;
 
 public class TraversalContext {
   private final DependencyNode node;
   private final List<Artifact> path;
   private final Set<String> testScopedArtifacts;
-  private final Set<String> exclusions;
+  private final Set<Exclusion> exclusions;
 
   private TraversalContext(DependencyNode node,
                            List<Artifact> path,
                            Set<String> testScopedArtifacts,
-                           Set<String> exclusions) {
+                           Set<Exclusion> exclusions) {
     this.node = node;
     this.path = Collections.unmodifiableList(path);
     this.testScopedArtifacts = Collections.unmodifiableSet(testScopedArtifacts);
@@ -38,7 +39,7 @@ public class TraversalContext {
       }
     }
 
-    return new TraversalContext(node, path, testScopedArtifacts, Collections.<String>emptySet());
+    return new TraversalContext(node, path, testScopedArtifacts, Collections.<Exclusion>emptySet());
   }
 
   public TraversalContext stepInto(MavenProject project, DependencyNode node) {
@@ -47,11 +48,11 @@ public class TraversalContext {
     List<Artifact> path = new ArrayList<>(this.path);
     path.add(node.getArtifact());
 
-    Set<String> exclusions = new HashSet<>(this.exclusions);
-    for (Dependency dependency : project.getDependencies()) {
+    Set<Exclusion> exclusions = new HashSet<>(this.exclusions);
+    for (org.apache.maven.model.Dependency dependency : project.getDependencies()) {
       if (artifactKey.equals(dependency.getManagementKey())) {
-        for (Exclusion exclusion : dependency.getExclusions()) {
-          exclusions.add(exclusion.getGroupId() + ":" + exclusion.getArtifactId());
+        for (org.apache.maven.model.Exclusion exclusion : dependency.getExclusions()) {
+          exclusions.add(new Exclusion(exclusion.getGroupId(), exclusion.getArtifactId(), null, null));
         }
       }
     }
@@ -59,8 +60,24 @@ public class TraversalContext {
     return new TraversalContext(node, path, testScopedArtifacts, exclusions);
   }
 
+  public TraversalContext stepInto(ArtifactDescriptorResult artifactDescriptor, DependencyNode node) {
+    String artifactKey = node.getArtifact().getDependencyConflictId();
+
+    List<Artifact> path = new ArrayList<>(this.path);
+    path.add(node.getArtifact());
+
+    Set<Exclusion> exclusions = new HashSet<>(this.exclusions);
+    for (Dependency dependency : artifactDescriptor.getDependencies()) {
+      if (artifactKey.equals(key(dependency))) {
+        exclusions.addAll(dependency.getExclusions());
+      }
+    }
+
+    return new TraversalContext(node, path, testScopedArtifacts, exclusions);
+  }
+
   public boolean isOverriddenToTestScope(Dependency dependency) {
-    return !excluded(dependency) && testScopedArtifacts.contains(dependency.getManagementKey());
+    return !excluded(dependency) && testScopedArtifacts.contains(key(dependency));
   }
 
   public Artifact currentArtifact() {
@@ -72,6 +89,31 @@ public class TraversalContext {
   }
 
   private boolean excluded(Dependency dependency) {
-    return exclusions.contains(dependency.getGroupId() + ":" + dependency.getArtifactId());
+    for (Exclusion exclusion : exclusions) {
+      if (matches(dependency, exclusion)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private static boolean matches(Dependency dependency, Exclusion exclusion) {
+    org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
+
+    return exclusion.getGroupId().equals(artifact.getGroupId()) &&
+        exclusion.getArtifactId().equals(artifact.getArtifactId()) &&
+        (exclusion.getClassifier().isEmpty() || exclusion.getClassifier().equals(artifact.getClassifier())) &&
+        (exclusion.getExtension().isEmpty() || exclusion.getExtension().equals(artifact.getExtension()));
+  }
+
+  private static String key(Dependency dependency) {
+    org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
+    String key = artifact.getGroupId() + ":" + artifact.getArtifactId() + ":" + artifact.getExtension();
+    if (!artifact.getClassifier().isEmpty()) {
+      key += ":" + artifact.getClassifier();
+    }
+
+    return key;
   }
 }

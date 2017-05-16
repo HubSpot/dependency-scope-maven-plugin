@@ -1,6 +1,6 @@
 package com.hubspot.maven.plugins.dependency.scope;
 
-import org.apache.maven.model.Dependency;
+import org.eclipse.aether.graph.Dependency;
 
 public class DependencyViolation {
   private final TraversalContext source;
