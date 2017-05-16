@@ -17,6 +17,7 @@ import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.model.Dependency;
+import org.apache.maven.model.Model;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -47,6 +48,7 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 @Mojo(name = "check", defaultPhase = LifecyclePhase.VALIDATE, requiresDependencyCollection = ResolutionScope.TEST, threadSafe = true)
 public class DependencyScopeMojo extends AbstractMojo {
+  private static final MavenProject EMPTY_PROJECT = emptyProject();
 
   @Parameter( defaultValue = "${session}", required = true, readonly = true )
   protected MavenSession session;
@@ -193,7 +195,9 @@ public class DependencyScopeMojo extends AbstractMojo {
               localRepository
           );
         } catch (ProjectBuildingException e) {
-          throw new MojoExecutionException("Error building dependency project", e);
+          String message = "Error building project for dependency " + readableGATCV(node.getArtifact());
+          getLog().warn(message);
+          return EMPTY_PROJECT;
         }
       }
     });
@@ -315,5 +319,11 @@ public class DependencyScopeMojo extends AbstractMojo {
     name += ":" + artifact.getBaseVersion();
 
     return name;
+  }
+
+  private static MavenProject emptyProject() {
+    MavenProject project = new MavenProject();
+    project.setModel(new Model());
+    return project;
   }
 }
