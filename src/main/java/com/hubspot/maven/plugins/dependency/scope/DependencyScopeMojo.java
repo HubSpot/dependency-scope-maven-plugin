@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 
 import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.resolver.filter.ArtifactFilter;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.model.Model;
 import org.apache.maven.plugin.AbstractMojo;
@@ -183,7 +184,13 @@ public class DependencyScopeMojo extends AbstractMojo {
       ProjectBuildingRequest buildingRequest = new DefaultProjectBuildingRequest(session.getProjectBuildingRequest());
       buildingRequest.setProject(project);
 
-      return dependencyGraphBuilder.buildDependencyGraph(buildingRequest, null);
+      return dependencyGraphBuilder.buildDependencyGraph(buildingRequest, new ArtifactFilter() {
+
+        @Override
+        public boolean include(Artifact artifact) {
+          return !Artifact.SCOPE_PROVIDED.equals(artifact.getScope());
+        }
+      });
     } catch (DependencyGraphBuilderException e) {
       throw new MojoExecutionException("Error building dependency graph", e);
     }
