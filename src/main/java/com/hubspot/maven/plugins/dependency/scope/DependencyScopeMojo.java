@@ -16,7 +16,6 @@ import java.util.concurrent.Executors;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.resolver.filter.ArtifactFilter;
 import org.apache.maven.execution.MavenSession;
-import org.apache.maven.model.Model;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -52,7 +51,6 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 @Mojo(name = "check", defaultPhase = LifecyclePhase.VALIDATE, requiresDependencyCollection = ResolutionScope.TEST, threadSafe = true)
 public class DependencyScopeMojo extends AbstractMojo {
-  private static final MavenProject EMPTY_PROJECT = emptyProject();
 
   @Parameter( defaultValue = "${session}", required = true, readonly = true )
   protected MavenSession session;
@@ -356,11 +354,5 @@ public class DependencyScopeMojo extends AbstractMojo {
         null,
         artifact.getFile()
     );
-  }
-
-  private static MavenProject emptyProject() {
-    MavenProject project = new MavenProject();
-    project.setModel(new Model());
-    return project;
   }
 }
