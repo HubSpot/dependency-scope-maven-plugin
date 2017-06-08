@@ -2,8 +2,11 @@ package com.hubspot.maven.plugins.dependency.scope;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 
 import org.apache.maven.artifact.Artifact;
@@ -20,15 +23,18 @@ public class TraversalContext {
   private final List<Artifact> path;
   private final Set<String> testScopedArtifacts;
   private final Set<Exclusion> exclusions;
+  private final Map<String, Set<Exclusion>> dependencyManagementExclusions;
 
   private TraversalContext(DependencyNode node,
                            List<Artifact> path,
                            Set<String> testScopedArtifacts,
-                           Set<Exclusion> exclusions) {
+                           Set<Exclusion> exclusions,
+                           Map<String, Set<Exclusion>> dependencyManagementExclusions) {
     this.node = node;
     this.path = Collections.unmodifiableList(path);
     this.testScopedArtifacts = Collections.unmodifiableSet(testScopedArtifacts);
     this.exclusions = Collections.unmodifiableSet(exclusions);
+    this.dependencyManagementExclusions = toUnmodifiableMap(dependencyManagementExclusions);
   }
 
   public static TraversalContext newContextFor(DependencyNode node) {
@@ -41,7 +47,13 @@ public class TraversalContext {
       }
     }
 
-    return new TraversalContext(node, path, testScopedArtifacts, Collections.<Exclusion>emptySet());
+    return new TraversalContext(
+        node,
+        path,
+        testScopedArtifacts,
+        Collections.<Exclusion>emptySet(),
+        Collections.<String, Set<Exclusion>>emptyMap()
+    );
   }
 
   public TraversalContext stepInto(MavenProject project, DependencyNode node) {
@@ -50,7 +62,30 @@ public class TraversalContext {
     List<Artifact> path = new ArrayList<>(this.path);
     path.add(node.getArtifact());
 
+    Map<String, Set<Exclusion>> dependencyManagementExclusions = new HashMap<>(this.dependencyManagementExclusions);
+    if (project.getDependencyManagement() != null) {
+      for (org.apache.maven.model.Dependency dependency : project.getDependencyManagement().getDependencies()) {
+        Set<Exclusion> dependencyExclusions = dependencyManagementExclusions.get(dependency.getManagementKey());
+
+        if (dependencyExclusions == null) {
+          dependencyExclusions = new HashSet<>();
+        } else {
+          dependencyExclusions = new HashSet<>(dependencyExclusions);
+        }
+
+        for (org.apache.maven.model.Exclusion exclusion : dependency.getExclusions()) {
+          dependencyExclusions.add(new Exclusion(exclusion.getGroupId(), exclusion.getArtifactId(), WILDCARD, WILDCARD));
+        }
+
+        dependencyManagementExclusions.put(dependency.getManagementKey(), dependencyExclusions);
+      }
+    }
+
     Set<Exclusion> exclusions = new HashSet<>(this.exclusions);
+    if (dependencyManagementExclusions.containsKey(artifactKey)) {
+      exclusions.addAll(dependencyManagementExclusions.get(artifactKey));
+    }
+
     for (org.apache.maven.model.Dependency dependency : project.getDependencies()) {
       if (artifactKey.equals(dependency.getManagementKey())) {
         for (org.apache.maven.model.Exclusion exclusion : dependency.getExclusions()) {
@@ -59,7 +94,7 @@ public class TraversalContext {
       }
     }
 
-    return new TraversalContext(node, path, testScopedArtifacts, exclusions);
+    return new TraversalContext(node, path, testScopedArtifacts, exclusions, dependencyManagementExclusions);
   }
 
   public TraversalContext stepInto(ArtifactDescriptorResult artifactDescriptor, DependencyNode node) {
@@ -69,13 +104,17 @@ public class TraversalContext {
     path.add(node.getArtifact());
 
     Set<Exclusion> exclusions = new HashSet<>(this.exclusions);
+    if (dependencyManagementExclusions.containsKey(artifactKey)) {
+      exclusions.addAll(dependencyManagementExclusions.get(artifactKey));
+    }
+
     for (Dependency dependency : artifactDescriptor.getDependencies()) {
       if (artifactKey.equals(key(dependency))) {
         exclusions.addAll(dependency.getExclusions());
       }
     }
 
-    return new TraversalContext(node, path, testScopedArtifacts, exclusions);
+    return new TraversalContext(node, path, testScopedArtifacts, exclusions, dependencyManagementExclusions);
   }
 
   public boolean isOverriddenToTestScope(Dependency dependency) {
@@ -98,6 +137,15 @@ public class TraversalContext {
     }
 
     return false;
+  }
+
+  private static Map<String, Set<Exclusion>> toUnmodifiableMap(Map<String, Set<Exclusion>> modifiableMap) {
+    Map<String, Set<Exclusion>> copy = new HashMap<>();
+    for (Entry<String, Set<Exclusion>> entry : modifiableMap.entrySet()) {
+      copy.put(entry.getKey(), Collections.unmodifiableSet(entry.getValue()));
+    }
+
+    return Collections.unmodifiableMap(copy);
   }
 
   private static boolean matches(Dependency dependency, Exclusion exclusion) {
