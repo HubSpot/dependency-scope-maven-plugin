@@ -4,8 +4,8 @@
 
   <parent>
     <groupId>org.basepom</groupId>
-    <artifactId>basepom-standard-oss</artifactId>
-    <version>12</version>
+    <artifactId>basepom-oss</artifactId>
+    <version>30</version>
   </parent>
 
   <groupId>com.hubspot.maven.plugins</groupId>
@@ -27,17 +27,11 @@
     </developer>
   </developers>
 
-  <prerequisites>
-    <maven>3</maven>
-  </prerequisites>
-
   <properties>
-    <project.jdk7.home>${env.JAVA_HOME}</project.jdk7.home>
-    <project.build.targetJdk>1.7</project.build.targetJdk>
     <basepom.check.skip-license>true</basepom.check.skip-license>
-    <basepom.check.fail-duplicate-finder>false</basepom.check.fail-duplicate-finder>
 
-    <basepom.test.timeout>120</basepom.test.timeout>
+    <!-- version 3.0.0-M1 doesn't seem to work with our GCS wagon -->
+    <dep.plugin.deploy.version>2.8.2</dep.plugin.deploy.version>
   </properties>
 
   <dependencyManagement>
@@ -46,6 +40,11 @@
         <groupId>org.codehaus.plexus</groupId>
         <artifactId>plexus-component-annotations</artifactId>
         <version>1.6</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>18.0</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -92,46 +91,4 @@
       <artifactId>guava</artifactId>
     </dependency>
   </dependencies>
-
-  <profiles>
-    <profile>
-      <id>travis</id>
-      <activation>
-        <property>
-          <name>env.TRAVIS</name>
-        </property>
-      </activation>
-      <properties>
-        <project.jdk7.home>${env.JAVA_HOME}</project.jdk7.home>
-        <basepom.test.reuse-vm>false</basepom.test.reuse-vm>
-        <basepom.test.fork-count>1</basepom.test.fork-count>
-      </properties>
-    </profile>
-    <profile>
-      <id>cross-compile</id>
-      <activation>
-        <jdk>(1.7,]</jdk>
-      </activation>
-      <build>
-        <pluginManagement>
-          <plugins>
-            <plugin>
-              <artifactId>maven-compiler-plugin</artifactId>
-              <configuration>
-                <compilerArguments children.combine="append">
-                  <bootclasspath>${project.jdk7.home}/jre/lib/rt.jar:${project.jdk7.home}/jre/lib/jce.jar:${project.jdk7.home}/../classes/classes.jar</bootclasspath>
-                </compilerArguments>
-              </configuration>
-            </plugin>
-            <plugin>
-              <artifactId>maven-javadoc-plugin</artifactId>
-              <configuration>
-                <bootclasspath>${project.jdk7.home}/jre/lib/rt.jar:${project.jdk7.home}/jre/lib/jce.jar:${project.jdk7.home}/../classes/classes.jar</bootclasspath>
-              </configuration>
-            </plugin>
-          </plugins>
-        </pluginManagement>
-      </build>
-    </profile>
-  </profiles>
 </project>

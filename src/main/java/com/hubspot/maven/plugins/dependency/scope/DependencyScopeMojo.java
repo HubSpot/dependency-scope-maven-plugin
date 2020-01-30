@@ -106,6 +106,7 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
 
     Set<DependencyViolation> violations = resolve(Futures.allAsList(futures));
+    executorService.shutdown();
 
     if (!violations.isEmpty()) {
       printViolations(violations);
