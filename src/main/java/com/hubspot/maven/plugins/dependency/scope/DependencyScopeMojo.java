@@ -8,13 +8,11 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.resolver.filter.ArtifactFilter;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -183,12 +181,8 @@ public class DependencyScopeMojo extends AbstractMojo {
       ProjectBuildingRequest buildingRequest = new DefaultProjectBuildingRequest(session.getProjectBuildingRequest());
       buildingRequest.setProject(project);
 
-      return dependencyGraphBuilder.buildDependencyGraph(buildingRequest, new ArtifactFilter() {
-
-        @Override
-        public boolean include(Artifact artifact) {
+      return dependencyGraphBuilder.buildDependencyGraph(buildingRequest, artifact -> {
           return !Artifact.SCOPE_PROVIDED.equals(artifact.getScope());
-        }
       });
     } catch (DependencyGraphBuilderException e) {
       throw new MojoExecutionException("Error building dependency graph", e);
@@ -196,22 +190,18 @@ public class DependencyScopeMojo extends AbstractMojo {
   }
 
   private ListenableFuture<ArtifactDescriptorResult> resolveArtifactDescriptor(final Artifact artifact) {
-    return executorService.submit(new Callable<ArtifactDescriptorResult>() {
+    return executorService.submit(() -> {
+      ArtifactDescriptorRequest request = new ArtifactDescriptorRequest(
+          toAether(artifact),
+          project.getRemoteProjectRepositories(),
+          null
+      );
 
-      @Override
-      public ArtifactDescriptorResult call() throws Exception {
-        ArtifactDescriptorRequest request = new ArtifactDescriptorRequest(
-            toAether(artifact),
-            project.getRemoteProjectRepositories(),
-            null
-        );
-
-        try {
-          return repositorySystem.readArtifactDescriptor(repositorySystemSession, request);
-        } catch (ArtifactDescriptorException e) {
-          String message = "Error resolving descriptor for artifact " + readableGATCV(artifact);
-          throw new MojoExecutionException(message, e);
-        }
+      try {
+        return repositorySystem.readArtifactDescriptor(repositorySystemSession, request);
+      } catch (ArtifactDescriptorException e) {
+        String message = "Error resolving descriptor for artifact " + readableGATCV(artifact);
+        throw new MojoExecutionException(message, e);
       }
     });
   }
@@ -302,13 +292,7 @@ public class DependencyScopeMojo extends AbstractMojo {
   }
 
   private static Comparator<DependencyViolation> artifactNameComparator() {
-    return new Comparator<DependencyViolation>() {
-
-      @Override
-      public int compare(DependencyViolation a, DependencyViolation b) {
-        return readableGATCV(a.getSource().currentArtifact()).compareTo(readableGATCV(b.getSource().currentArtifact()));
-      }
-    };
+    return Comparator.comparing(violation -> readableGATCV(violation.getSource().currentArtifact()));
   }
 
   private static String readableGATC(Dependency dependency) {
