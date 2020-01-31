@@ -182,7 +182,8 @@ public class DependencyScopeMojo extends AbstractMojo {
       buildingRequest.setProject(project);
 
       return dependencyGraphBuilder.buildDependencyGraph(buildingRequest, artifact -> {
-          return !Artifact.SCOPE_PROVIDED.equals(artifact.getScope());
+          return !Artifact.SCOPE_PROVIDED.equals(artifact.getScope())
+              && !Artifact.SCOPE_SYSTEM.equals(artifact.getScope());
       });
     } catch (DependencyGraphBuilderException e) {
       throw new MojoExecutionException("Error building dependency graph", e);
