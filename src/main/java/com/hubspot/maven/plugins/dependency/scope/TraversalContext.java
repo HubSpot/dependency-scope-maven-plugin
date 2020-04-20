@@ -252,7 +252,7 @@ public class TraversalContext {
         VersionRange.createFromVersion(artifact.getVersion()),
         dependency.getScope(),
         artifact.getExtension(),
-        artifact.getClassifier(),
+        artifact.getClassifier().isEmpty() ? null : artifact.getClassifier(),
         new DefaultArtifactHandler(artifact.getExtension()),
         dependency.isOptional()
     );

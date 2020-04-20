@@ -23,7 +23,7 @@ public class DependencyViolation {
   public List<String> getPath() {
     ImmutableList.Builder<String> builder = ImmutableList.builder();
     source.path().stream().map(Artifact::toString).forEach(builder::add);
-    builder.add(dependency.getArtifact().toString());
+    builder.add(dependency.getArtifact() + ":" + dependency.getScope());
 
     return builder.build();
   }

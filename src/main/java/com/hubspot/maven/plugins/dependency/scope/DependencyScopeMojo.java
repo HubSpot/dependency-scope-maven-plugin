@@ -12,6 +12,7 @@ import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.execution.MavenSession;
@@ -248,45 +249,38 @@ public class DependencyScopeMojo extends AbstractMojo {
       violationsByDependency.get(key).add(violation);
     }
 
+    Consumer<String> logger = fail ? getLog()::error : getLog()::warn;
     for (Entry<String, Set<DependencyViolation>> dependencyViolation : violationsByDependency.entrySet()) {
-      StringBuilder message = new StringBuilder();
-      message.append("Found a problem with test-scoped dependency ").append(dependencyViolation.getKey());
+      logger.accept("Found a problem with test-scoped dependency " + dependencyViolation.getKey());
       for (DependencyViolation violation : dependencyViolation.getValue()) {
-        message.append("\n")
-            .append("  ")
-            .append("Scope ")
-            .append(violation.getDependency().getScope())
-            .append(" was expected by artifact: ")
-            .append(readableGATCV(violation.getSource().currentArtifact()));
+        logger.accept(
+            "Scope " +
+                violation.getDependency().getScope() +
+                " was expected by artifact " +
+                readableGATCV(violation.getSource().currentArtifact())
+        );
 
         if (verbose) {
-          message.append("\n  Full dependency chain:");
-          StringBuilder prefix = new StringBuilder("  ");
+          logger.accept("");
+          logger.accept("Dependency chain:");
+          StringBuilder prefix = new StringBuilder();
           boolean first = true;
           for (String artifact : violation.getPath()) {
             if (first) {
-              message.append("\n").append(prefix).append(artifact);
+              logger.accept(artifact);
               first = false;
             } else {
-              message.append("\n").append(prefix).append("\\- ").append(artifact);
-              prefix.append("  ");
+              logger.accept(prefix + "\\- " + artifact);
+              prefix.append("   ");
             }
           }
         }
       }
-
-      if (fail) {
-        getLog().error(message);
-      } else {
-        getLog().warn(message);
-      }
     }
 
     if (linkToDocumentation) {
-      StringBuilder message = new StringBuilder("For information on how to fix these issues, see here:")
-          .append("\n  ")
-          .append("https://github.com/HubSpot/dependency-scope-maven-plugin#how-to-fix-issues");
-      getLog().info(message);
+      getLog().info("For information on how to fix these issues, see here:");
+      getLog().info("https://github.com/HubSpot/dependency-scope-maven-plugin#how-to-fix-issues");
     }
   }
 
