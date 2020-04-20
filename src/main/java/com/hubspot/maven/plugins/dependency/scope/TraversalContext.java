@@ -16,6 +16,8 @@ import org.eclipse.aether.graph.Exclusion;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.MapDifference;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 
 public class TraversalContext {
@@ -49,25 +51,64 @@ public class TraversalContext {
         .map(dependency -> dependency.getArtifact().getDependencyConflictId())
         .collect(ImmutableSet.toImmutableSet());
 
-    ImmutableMap.Builder<String, String> dependencyVersions = ImmutableMap.builder();
-    for (Artifact artifact : project.getArtifacts()) {
-      dependencyVersions.put(artifact.getDependencyConflictId(), artifact.getBaseVersion());
-    }
+    ImmutableMap<String, String> dependencyVersions = project.getArtifacts()
+        .stream()
+        .collect(
+            ImmutableMap.toImmutableMap(
+                Artifact::getDependencyConflictId,
+                Artifact::getBaseVersion
+            )
+        );
 
-    ImmutableMap.Builder<String, ImmutableSet<Exclusion>> dependencyManagementExclusions = ImmutableMap.builder();
-    if (project.getDependencyManagement() != null) {
-      for (org.apache.maven.model.Dependency dependency : project.getDependencyManagement().getDependencies()) {
-        dependencyManagementExclusions.put(dependency.getManagementKey(), exclusions(dependency));
-      }
+    final ImmutableMap<String, ImmutableSet<Exclusion>> dependencyManagementExclusions;
+    if (project.getDependencyManagement() == null) {
+      dependencyManagementExclusions = ImmutableMap.of();
+    } else {
+      dependencyManagementExclusions = project.getDependencyManagement()
+          .getDependencies()
+          .stream()
+          .collect(
+              ImmutableMap.toImmutableMap(
+                  org.apache.maven.model.Dependency::getManagementKey,
+                  TraversalContext::exclusions
+              )
+          );
     }
 
     return new TraversalContext(
         node.getArtifact(),
         ImmutableList.of(node.getArtifact()),
         testScopedArtifacts,
-        dependencyVersions.build(),
+        dependencyVersions,
         ImmutableSet.of(),
-        dependencyManagementExclusions.build()
+        dependencyManagementExclusions
+    );
+  }
+
+  public TraversalContext extendManagedDependencyExclusions(List<Dependency> dependencies) {
+    if (dependencies.isEmpty()) {
+      return this;
+    }
+
+    ImmutableMap<String, ImmutableSet<Exclusion>> newExclusions = dependencies.stream()
+        .filter(dependency -> !dependency.getExclusions().isEmpty())
+        .collect(
+            ImmutableMap.toImmutableMap(
+                TraversalContext::computeDependencyKey,
+                dependency -> ImmutableSet.copyOf(dependency.getExclusions())
+            )
+        );
+
+    ImmutableMap<String, ImmutableSet<Exclusion>> mergedExclusions =
+        merge(dependencyManagementExclusions, newExclusions);
+
+    return new TraversalContext(
+        artifact,
+        path,
+        testScopedArtifacts,
+        dependencyVersions,
+        exclusions,
+        mergedExclusions
     );
   }
 
@@ -110,9 +151,7 @@ public class TraversalContext {
 
     if (projectVersion == null) {
       /*
-      this usually means the artifact is excluded and our exclusion logic is slightly off
-      this can happen because we're not climbing the parent hierarchy for every artifact
-      so we can miss some exclusions
+      probably something is off with our exclusion logic
        */
       return Optional.empty();
     }
@@ -124,11 +163,11 @@ public class TraversalContext {
         .add(artifact)
         .build();
 
-    Set<Exclusion> exclusions = this.exclusions;
+    ImmutableSet<Exclusion> exclusions = this.exclusions;
     if (dependencyManagementExclusions.containsKey(artifact.getDependencyConflictId())) {
       Set<Exclusion> toAdd = dependencyManagementExclusions.get(artifact.getDependencyConflictId());
 
-      exclusions = Sets.union(exclusions, toAdd);
+      exclusions = Sets.union(exclusions, toAdd).immutableCopy();
     }
 
     return Optional.of(
@@ -137,7 +176,7 @@ public class TraversalContext {
             path,
             testScopedArtifacts,
             dependencyVersions,
-            ImmutableSet.copyOf(exclusions),
+            exclusions,
             dependencyManagementExclusions
         )
     );
@@ -154,7 +193,7 @@ public class TraversalContext {
   }
 
   public boolean isOverriddenToTestScope(Dependency dependency) {
-    return testScopedArtifacts.contains(fromAether(dependency).getDependencyConflictId());
+    return testScopedArtifacts.contains(computeDependencyKey(dependency));
   }
 
   public Artifact currentArtifact() {
@@ -172,6 +211,29 @@ public class TraversalContext {
         artifact.getArtifactId().equals(exclusion.getArtifactId()) &&
         (WILDCARD.equals(exclusion.getClassifier()) || artifact.getClassifier().equals(exclusion.getClassifier())) &&
         (WILDCARD.equals(exclusion.getExtension()) || artifact.getExtension().equals(exclusion.getExtension()));
+  }
+
+  private static ImmutableMap<String, ImmutableSet<Exclusion>> merge(
+      ImmutableMap<String, ImmutableSet<Exclusion>> a,
+      ImmutableMap<String, ImmutableSet<Exclusion>> b) {
+
+    MapDifference<String, ImmutableSet<Exclusion>> diff =
+        Maps.difference(a, b);
+
+    ImmutableMap.Builder<String, ImmutableSet<Exclusion>> merged = ImmutableMap.builder();
+    merged.putAll(diff.entriesOnlyOnLeft());
+    merged.putAll(diff.entriesOnlyOnRight());
+    merged.putAll(diff.entriesInCommon());
+    diff.entriesDiffering().forEach((key, valueDifference) -> {
+      ImmutableSet<Exclusion> mergedValue = Sets.union(
+          valueDifference.leftValue(),
+          valueDifference.rightValue()
+      ).immutableCopy();
+
+      merged.put(key, mergedValue);
+    });
+
+    return merged.build();
   }
 
   private static ImmutableSet<Exclusion> exclusions(org.apache.maven.model.Dependency dependency) {
@@ -207,5 +269,22 @@ public class TraversalContext {
         artifact.getArtifactHandler(),
         artifact.isOptional()
     );
+  }
+
+  private static String computeDependencyKey(Dependency dependency) {
+    org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
+
+    StringBuilder builder = new StringBuilder()
+        .append(artifact.getGroupId())
+        .append(":")
+        .append(artifact.getArtifactId())
+        .append(":")
+        .append(artifact.getExtension());
+
+    if (!artifact.getClassifier().isEmpty()) {
+      builder.append(":").append(artifact.getClassifier());
+    }
+
+    return builder.toString();
   }
 }

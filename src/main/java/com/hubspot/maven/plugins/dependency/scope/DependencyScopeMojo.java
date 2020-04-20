@@ -121,7 +121,7 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
   }
 
-  private ListenableFuture<Set<DependencyViolation>> findViolations(final TraversalContext context) {
+  private ListenableFuture<Set<DependencyViolation>> findViolations(TraversalContext context) {
     final SettableFuture<Set<DependencyViolation>> future = SettableFuture.create();
 
     if (!checkedArtifacts.add(context.currentArtifact().getId())) {
@@ -150,6 +150,8 @@ public class DependencyScopeMojo extends AbstractMojo {
             return;
           }
 
+          TraversalContext temp = context;
+          TraversalContext context = temp.extendManagedDependencyExclusions(artifactDescriptor.getDependencies());
           final Set<DependencyViolation> violations = Sets.newConcurrentHashSet();
           final CountDownLatch latch = new CountDownLatch(runtimeDependencies.size());
           for (Dependency dependency : runtimeDependencies) {
@@ -158,6 +160,13 @@ public class DependencyScopeMojo extends AbstractMojo {
             }
 
             Optional<TraversalContext> subcontext = context.stepInto(dependency);
+            if (!subcontext.isPresent()) {
+              getLog().warn(
+                  "Could not find project version for dependency " +
+                      dependency +
+                      ". This is probably a bug in the plugin"
+              );
+            }
             ListenableFuture<Set<DependencyViolation>> subfuture = subcontext.isPresent()
                 ? findViolations(subcontext.get())
                 : Futures.immediateFuture(ImmutableSet.of());
