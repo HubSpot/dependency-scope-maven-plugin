@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
@@ -37,6 +38,7 @@ import org.eclipse.aether.resolution.ArtifactDescriptorRequest;
 import org.eclipse.aether.resolution.ArtifactDescriptorResult;
 
 import com.google.common.base.Throwables;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.FutureCallback;
@@ -71,7 +73,7 @@ public class DependencyScopeMojo extends AbstractMojo {
   @Parameter(defaultValue = "false")
   private boolean skip;
 
-  @Parameter(property = "verbose", defaultValue = "false")
+  @Parameter(property = "verbose", defaultValue = "true")
   private boolean verbose;
 
   @Component
@@ -81,6 +83,7 @@ public class DependencyScopeMojo extends AbstractMojo {
   private DependencyGraphBuilder dependencyGraphBuilder;
 
   private ListeningExecutorService executorService;
+  private Set<String> checkedArtifacts;
 
   @Override
   public void execute() throws MojoExecutionException, MojoFailureException {
@@ -90,16 +93,17 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
 
     executorService = newExecutorService();
+    checkedArtifacts = Sets.newConcurrentHashSet();
 
     DependencyNode node = buildDependencyNode();
-    TraversalContext context = TraversalContext.newContextFor(node);
+    TraversalContext context = TraversalContext.newContextFor(project, node);
 
     List<ListenableFuture<Set<DependencyViolation>>> futures = new ArrayList<>();
     for (DependencyNode dependency : node.getChildren()) {
       if (!Artifact.SCOPE_TEST.equals(dependency.getArtifact().getScope())) {
         TraversalContext subcontext = context.stepInto(project, dependency);
 
-        futures.add(findViolations(dependency, subcontext));
+        futures.add(findViolations(subcontext));
       }
     }
 
@@ -117,32 +121,48 @@ public class DependencyScopeMojo extends AbstractMojo {
     }
   }
 
-  private ListenableFuture<Set<DependencyViolation>> findViolations(final DependencyNode node,
-                                                                    final TraversalContext context) {
+  private ListenableFuture<Set<DependencyViolation>> findViolations(final TraversalContext context) {
     final SettableFuture<Set<DependencyViolation>> future = SettableFuture.create();
 
-    Futures.addCallback(resolveArtifactDescriptor(node.getArtifact()), new FutureCallback<ArtifactDescriptorResult>() {
+    if (!checkedArtifacts.add(context.currentArtifact().getId())) {
+      future.set(ImmutableSet.of());
+      return future;
+    }
+
+    Futures.addCallback(resolveArtifactDescriptor(context.currentArtifact()), new FutureCallback<ArtifactDescriptorResult>() {
 
       @Override
       public void onSuccess(ArtifactDescriptorResult artifactDescriptor) {
-        try {
-          final Set<DependencyViolation> violations = Sets.newConcurrentHashSet();
-          for (Dependency dependency : artifactDescriptor.getDependencies()) {
-            if (dependencyRequiredAtRuntime(dependency) && context.isOverriddenToTestScope(dependency)) {
-              violations.add(new DependencyViolation(context, dependency));
-            }
-          }
+        if (artifactDescriptor == null) {
+          onFailure(new NullPointerException("artifactDescriptor"));
+          return;
+        }
 
-          if (node.getChildren().isEmpty()) {
-            future.set(violations);
+        try {
+          Set<Dependency> runtimeDependencies = artifactDescriptor.getDependencies()
+              .stream()
+              .filter(DependencyScopeMojo::dependencyRequiredAtRuntime)
+              .filter(dependency -> !context.isExcluded(dependency))
+              .collect(ImmutableSet.toImmutableSet());
+
+          if (runtimeDependencies.isEmpty()) {
+            future.set(ImmutableSet.of());
             return;
           }
 
-          final CountDownLatch latch = new CountDownLatch(node.getChildren().size());
-          for (DependencyNode child : node.getChildren()) {
-            TraversalContext subcontext = context.stepInto(artifactDescriptor, child);
+          final Set<DependencyViolation> violations = Sets.newConcurrentHashSet();
+          final CountDownLatch latch = new CountDownLatch(runtimeDependencies.size());
+          for (Dependency dependency : runtimeDependencies) {
+            if (context.isOverriddenToTestScope(dependency)) {
+              violations.add(new DependencyViolation(context, dependency));
+            }
 
-            Futures.addCallback(findViolations(child, subcontext), new FutureCallback<Set<DependencyViolation>>() {
+            Optional<TraversalContext> subcontext = context.stepInto(dependency);
+            ListenableFuture<Set<DependencyViolation>> subfuture = subcontext.isPresent()
+                ? findViolations(subcontext.get())
+                : Futures.immediateFuture(ImmutableSet.of());
+
+            Futures.addCallback(subfuture, new FutureCallback<Set<DependencyViolation>>() {
 
               @Override
               public void onSuccess(Set<DependencyViolation> result) {
@@ -160,7 +180,7 @@ public class DependencyScopeMojo extends AbstractMojo {
               public void onFailure(Throwable t) {
                 future.setException(t);
               }
-            });
+            }, MoreExecutors.directExecutor());
           }
         } catch (Throwable t) {
           future.setException(t);
@@ -171,7 +191,7 @@ public class DependencyScopeMojo extends AbstractMojo {
       public void onFailure(Throwable t) {
         future.setException(t);
       }
-    });
+    }, MoreExecutors.directExecutor());
 
     return future;
   }
@@ -231,11 +251,17 @@ public class DependencyScopeMojo extends AbstractMojo {
             .append(readableGATCV(violation.getSource().currentArtifact()));
 
         if (verbose) {
-          message.append("\n  Via chain:");
+          message.append("\n  Full dependency chain:");
           StringBuilder prefix = new StringBuilder("  ");
-          for (Artifact artifact : violation.getSource().path()) {
-            message.append("\n").append(prefix).append("- ").append(artifact.toString());
-            prefix.append("  ");
+          boolean first = true;
+          for (String artifact : violation.getPath()) {
+            if (first) {
+              message.append("\n").append(prefix).append(artifact);
+              first = false;
+            } else {
+              message.append("\n").append(prefix).append("\\- ").append(artifact);
+              prefix.append("  ");
+            }
           }
         }
       }
@@ -287,7 +313,9 @@ public class DependencyScopeMojo extends AbstractMojo {
       Thread.currentThread().interrupt();
       throw new MojoExecutionException("Interrupted while checking dependency scopes", e);
     } catch (ExecutionException e) {
-      Throwables.propagateIfInstanceOf(e.getCause(), MojoExecutionException.class);
+      if (e.getCause() != null) {
+        Throwables.throwIfInstanceOf(e.getCause(), MojoExecutionException.class);
+      }
       throw new MojoExecutionException("Error while checking dependency scopes", e.getCause());
     }
   }

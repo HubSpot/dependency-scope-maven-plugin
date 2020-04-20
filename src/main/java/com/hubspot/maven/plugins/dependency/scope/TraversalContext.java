@@ -1,135 +1,149 @@
 package com.hubspot.maven.plugins.dependency.scope;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Set;
 
 import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.DefaultArtifact;
+import org.apache.maven.artifact.handler.DefaultArtifactHandler;
+import org.apache.maven.artifact.versioning.VersionRange;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.shared.dependency.graph.DependencyNode;
 import org.eclipse.aether.graph.Dependency;
 import org.eclipse.aether.graph.Exclusion;
-import org.eclipse.aether.resolution.ArtifactDescriptorResult;
+
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
 
 public class TraversalContext {
   private static final String WILDCARD = "*";
 
-  private final DependencyNode node;
-  private final List<Artifact> path;
-  private final Set<String> testScopedArtifacts;
-  private final Set<Exclusion> exclusions;
-  private final Map<String, Set<Exclusion>> dependencyManagementExclusions;
+  private final Artifact artifact;
+  private final ImmutableList<Artifact> path;
+  private final ImmutableSet<String> testScopedArtifacts;
+  private final ImmutableMap<String, String> dependencyVersions;
+  private final ImmutableSet<Exclusion> exclusions;
+  private final ImmutableMap<String, ImmutableSet<Exclusion>> dependencyManagementExclusions;
 
-  private TraversalContext(DependencyNode node,
-                           List<Artifact> path,
-                           Set<String> testScopedArtifacts,
-                           Set<Exclusion> exclusions,
-                           Map<String, Set<Exclusion>> dependencyManagementExclusions) {
-    this.node = node;
-    this.path = Collections.unmodifiableList(path);
-    this.testScopedArtifacts = Collections.unmodifiableSet(testScopedArtifacts);
-    this.exclusions = Collections.unmodifiableSet(exclusions);
-    this.dependencyManagementExclusions = toUnmodifiableMap(dependencyManagementExclusions);
+  private TraversalContext(Artifact artifact,
+                           ImmutableList<Artifact> path,
+                           ImmutableSet<String> testScopedArtifacts,
+                           ImmutableMap<String, String> dependencyVersions,
+                           ImmutableSet<Exclusion> exclusions,
+                           ImmutableMap<String, ImmutableSet<Exclusion>> dependencyManagementExclusions) {
+    this.artifact = artifact;
+    this.path = path;
+    this.testScopedArtifacts = testScopedArtifacts;
+    this.dependencyVersions = dependencyVersions;
+    this.exclusions = exclusions;
+    this.dependencyManagementExclusions = dependencyManagementExclusions;
   }
 
-  public static TraversalContext newContextFor(DependencyNode node) {
-    List<Artifact> path = Collections.singletonList(node.getArtifact());
+  public static TraversalContext newContextFor(MavenProject project, DependencyNode node) {
+    ImmutableSet<String> testScopedArtifacts = node.getChildren()
+        .stream()
+        .filter(dependency -> Artifact.SCOPE_TEST.equals(dependency.getArtifact().getScope()))
+        .map(dependency -> dependency.getArtifact().getDependencyConflictId())
+        .collect(ImmutableSet.toImmutableSet());
 
-    Set<String> testScopedArtifacts = new HashSet<>();
-    for (DependencyNode dependency : node.getChildren()) {
-      if (Artifact.SCOPE_TEST.equals(dependency.getArtifact().getScope())) {
-        testScopedArtifacts.add(dependency.getArtifact().getDependencyConflictId());
+    ImmutableMap.Builder<String, String> dependencyVersions = ImmutableMap.builder();
+    for (Artifact artifact : project.getArtifacts()) {
+      dependencyVersions.put(artifact.getDependencyConflictId(), artifact.getBaseVersion());
+    }
+
+    ImmutableMap.Builder<String, ImmutableSet<Exclusion>> dependencyManagementExclusions = ImmutableMap.builder();
+    if (project.getDependencyManagement() != null) {
+      for (org.apache.maven.model.Dependency dependency : project.getDependencyManagement().getDependencies()) {
+        dependencyManagementExclusions.put(dependency.getManagementKey(), exclusions(dependency));
       }
     }
 
     return new TraversalContext(
-        node,
-        path,
+        node.getArtifact(),
+        ImmutableList.of(node.getArtifact()),
         testScopedArtifacts,
-        Collections.<Exclusion>emptySet(),
-        Collections.<String, Set<Exclusion>>emptyMap()
+        dependencyVersions.build(),
+        ImmutableSet.of(),
+        dependencyManagementExclusions.build()
     );
   }
 
   public TraversalContext stepInto(MavenProject project, DependencyNode node) {
     String artifactKey = node.getArtifact().getDependencyConflictId();
 
-    List<Artifact> path = new ArrayList<>(this.path);
-    path.add(node.getArtifact());
+    ImmutableList<Artifact> path = ImmutableList.<Artifact>builderWithExpectedSize(this.path.size() + 1)
+        .addAll(this.path)
+        .add(node.getArtifact())
+        .build();
 
-    Map<String, Set<Exclusion>> dependencyManagementExclusions = new HashMap<>(this.dependencyManagementExclusions);
-    if (project.getDependencyManagement() != null) {
-      for (org.apache.maven.model.Dependency dependency : project.getDependencyManagement().getDependencies()) {
-        Set<Exclusion> dependencyExclusions = dependencyManagementExclusions.get(dependency.getManagementKey());
-
-        if (dependencyExclusions == null) {
-          dependencyExclusions = new HashSet<>();
-        } else {
-          dependencyExclusions = new HashSet<>(dependencyExclusions);
-        }
-
-        for (org.apache.maven.model.Exclusion exclusion : dependency.getExclusions()) {
-          dependencyExclusions.add(new Exclusion(exclusion.getGroupId(), exclusion.getArtifactId(), WILDCARD, WILDCARD));
-        }
-
-        dependencyManagementExclusions.put(dependency.getManagementKey(), dependencyExclusions);
-      }
-    }
-
-    Set<Exclusion> exclusions = new HashSet<>(this.exclusions);
+    Set<Exclusion> exclusions = this.exclusions;
     if (dependencyManagementExclusions.containsKey(artifactKey)) {
-      exclusions.addAll(dependencyManagementExclusions.get(artifactKey));
+      Set<Exclusion> toAdd = dependencyManagementExclusions.get(artifactKey);
+
+      exclusions = Sets.union(exclusions, toAdd);
     }
 
     for (org.apache.maven.model.Dependency dependency : project.getDependencies()) {
       if (artifactKey.equals(dependency.getManagementKey())) {
-        for (org.apache.maven.model.Exclusion exclusion : dependency.getExclusions()) {
-          exclusions.add(new Exclusion(exclusion.getGroupId(), exclusion.getArtifactId(), WILDCARD, WILDCARD));
+        if (!dependency.getExclusions().isEmpty()) {
+          exclusions = Sets.union(exclusions, exclusions(dependency));
         }
       }
     }
 
-    return new TraversalContext(node, path, testScopedArtifacts, exclusions, dependencyManagementExclusions);
+    return new TraversalContext(
+        node.getArtifact(),
+        path,
+        testScopedArtifacts,
+        dependencyVersions,
+        ImmutableSet.copyOf(exclusions),
+        dependencyManagementExclusions
+    );
   }
 
-  public TraversalContext stepInto(ArtifactDescriptorResult artifactDescriptor, DependencyNode node) {
-    String artifactKey = node.getArtifact().getDependencyConflictId();
+  public Optional<TraversalContext> stepInto(Dependency dependency) {
+    Artifact artifact = fromAether(dependency);
+    String projectVersion = dependencyVersions.get(artifact.getDependencyConflictId());
 
-    List<Artifact> path = new ArrayList<>(this.path);
-    path.add(node.getArtifact());
-
-    Set<Exclusion> exclusions = new HashSet<>(this.exclusions);
-    if (dependencyManagementExclusions.containsKey(artifactKey)) {
-      exclusions.addAll(dependencyManagementExclusions.get(artifactKey));
+    if (projectVersion == null) {
+      /*
+      this usually means the artifact is excluded and our exclusion logic is slightly off
+      this can happen because we're not climbing the parent hierarchy for every artifact
+      so we can miss some exclusions
+       */
+      return Optional.empty();
     }
 
-    for (Dependency dependency : artifactDescriptor.getDependencies()) {
-      if (artifactKey.equals(key(dependency))) {
-        exclusions.addAll(dependency.getExclusions());
-      }
+    artifact = withVersion(artifact, projectVersion);
+
+    ImmutableList<Artifact> path = ImmutableList.<Artifact>builderWithExpectedSize(this.path.size() + 1)
+        .addAll(this.path)
+        .add(artifact)
+        .build();
+
+    Set<Exclusion> exclusions = this.exclusions;
+    if (dependencyManagementExclusions.containsKey(artifact.getDependencyConflictId())) {
+      Set<Exclusion> toAdd = dependencyManagementExclusions.get(artifact.getDependencyConflictId());
+
+      exclusions = Sets.union(exclusions, toAdd);
     }
 
-    return new TraversalContext(node, path, testScopedArtifacts, exclusions, dependencyManagementExclusions);
+    return Optional.of(
+        new TraversalContext(
+            artifact,
+            path,
+            testScopedArtifacts,
+            dependencyVersions,
+            ImmutableSet.copyOf(exclusions),
+            dependencyManagementExclusions
+        )
+    );
   }
 
-  public boolean isOverriddenToTestScope(Dependency dependency) {
-    return !excluded(dependency) && testScopedArtifacts.contains(key(dependency));
-  }
-
-  public Artifact currentArtifact() {
-    return node.getArtifact();
-  }
-
-  public List<Artifact> path() {
-    return path;
-  }
-
-  private boolean excluded(Dependency dependency) {
+  public boolean isExcluded(Dependency dependency) {
     for (Exclusion exclusion : exclusions) {
       if (matches(dependency, exclusion)) {
         return true;
@@ -139,13 +153,16 @@ public class TraversalContext {
     return false;
   }
 
-  private static Map<String, Set<Exclusion>> toUnmodifiableMap(Map<String, Set<Exclusion>> modifiableMap) {
-    Map<String, Set<Exclusion>> copy = new HashMap<>();
-    for (Entry<String, Set<Exclusion>> entry : modifiableMap.entrySet()) {
-      copy.put(entry.getKey(), Collections.unmodifiableSet(entry.getValue()));
-    }
+  public boolean isOverriddenToTestScope(Dependency dependency) {
+    return testScopedArtifacts.contains(fromAether(dependency).getDependencyConflictId());
+  }
 
-    return Collections.unmodifiableMap(copy);
+  public Artifact currentArtifact() {
+    return artifact;
+  }
+
+  public List<Artifact> path() {
+    return path;
   }
 
   private static boolean matches(Dependency dependency, Exclusion exclusion) {
@@ -157,13 +174,38 @@ public class TraversalContext {
         (WILDCARD.equals(exclusion.getExtension()) || artifact.getExtension().equals(exclusion.getExtension()));
   }
 
-  private static String key(Dependency dependency) {
-    org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
-    String key = artifact.getGroupId() + ":" + artifact.getArtifactId() + ":" + artifact.getExtension();
-    if (!artifact.getClassifier().isEmpty()) {
-      key += ":" + artifact.getClassifier();
-    }
+  private static ImmutableSet<Exclusion> exclusions(org.apache.maven.model.Dependency dependency) {
+    return dependency.getExclusions()
+        .stream()
+        .map(exclusion -> new Exclusion(exclusion.getGroupId(), exclusion.getArtifactId(), WILDCARD, WILDCARD))
+        .collect(ImmutableSet.toImmutableSet());
+  }
 
-    return key;
+  private static Artifact fromAether(Dependency dependency) {
+    org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
+
+    return new DefaultArtifact(
+        artifact.getGroupId(),
+        artifact.getArtifactId(),
+        VersionRange.createFromVersion(artifact.getVersion()),
+        dependency.getScope(),
+        artifact.getExtension(),
+        artifact.getClassifier(),
+        new DefaultArtifactHandler(artifact.getExtension()),
+        dependency.isOptional()
+    );
+  }
+
+  private static Artifact withVersion(Artifact artifact, String version) {
+    return new DefaultArtifact(
+        artifact.getGroupId(),
+        artifact.getArtifactId(),
+        VersionRange.createFromVersion(version),
+        artifact.getScope(),
+        artifact.getType(),
+        artifact.getClassifier(),
+        artifact.getArtifactHandler(),
+        artifact.isOptional()
+    );
   }
 }
