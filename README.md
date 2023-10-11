@@ -1,5 +1,7 @@
 # dependency-scope-maven-plugin
 
+## This plugin has been adopted by the basepom project, and now lives [here](https://github.com/basepom/maven-plugins/tree/main/dependency-scope)
+
 ## Motivation
 
 This plugin aims to mitigate a particular pesky problem with Maven which is that if you declare a dependency with test scope, that will take precedence over a transitive dependency with compile scope. For example, let's say I only use Guava in test code for my project. So it is natural to define a dependency on Guava with `<scope>test</scope>`. But if any of my dependencies rely on Guava at runtime, my app will now fail at runtime with confusing `NoClassDefFoundError`s for Guava classes. So I should just use compile scope for Guava then? Well, if none of your dependencies use Guava at runtime then you've just unnecessarily bloated your app. So I should check my dependency tree for a transitive dependency on Guava and use compile scope if that exists and test scope otherwise? Sure, but you need to repeat this process every time you want to add a test-scoped dependency, and need to reevaluate all previous decisions any time your dependency tree changes. And to make matters worse, the dependency is on the classpath at test time so no amount of unit testing can catch this class of errors. It was suggested to change this behavior within Maven in [2009](https://issues.apache.org/jira/browse/MNG-4156) but that never went anywhere.
